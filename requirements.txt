@@ -1,0 +1,7 @@
+# Framework cores plus local embedding support; no hosted model-provider dependency.
+llama-index-core>=0.12,<0.13
+langchain-core>=0.3,<0.4
+sentence-transformers
+huggingface_hub
+
+torch
