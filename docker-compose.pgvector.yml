@@ -34,6 +34,10 @@ services:
       POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?Copy .env.example to .env and set POSTGRES_APP_PASSWORD}
       HF_TOKEN: ${HF_TOKEN:-}
       HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+      LLM_PROVIDER: ${LLM_PROVIDER:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
     volumes:
       - ${HF_HUB_CACHE_SOURCE:-huggingface_hub}:/root/.cache/huggingface/hub
     ports:
