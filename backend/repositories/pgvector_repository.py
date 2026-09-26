@@ -54,17 +54,26 @@ class PgVectorRepository:
         cursor.execute("SELECT set_config('app.user_id', %s, true)", (user["id"],))
         cursor.execute("SELECT set_config('app.user_role', %s, true)", (user["role"],))
 
-    def search(self, user: dict[str, str], query_embedding: list[float], limit: int = 3) -> list[dict[str, Any]]:
-        """RLS filters rows before pgvector cosine-distance ranking."""
+    def search(
+        self,
+        user: dict[str, str],
+        query_embedding: list[float],
+        allowed_document_ids: list[str],
+        limit: int = 3,
+    ) -> list[dict[str, Any]]:
+        """Apply the app allowlist and RLS before cosine-distance ranking."""
+        if not allowed_document_ids:
+            return []
         sql = """
             SELECT document_id, parent_document_id, chunk_index, title, document_type, classification, owner_id, content, tags
             FROM hr_document_chunks
+            WHERE parent_document_id = ANY(%s::text[])
             ORDER BY embedding <=> %s::vector
             LIMIT %s
         """
         with self.psycopg.connect(self.database_url) as connection, connection.cursor() as cursor:
             self._set_security_context(cursor, user)
-            cursor.execute(sql, (self._vector_literal(query_embedding), limit))
+            cursor.execute(sql, (allowed_document_ids, self._vector_literal(query_embedding), limit))
             rows = cursor.fetchall()
         fields = ("id", "parent_document_id", "chunk_index", "title", "document_type", "classification", "owner_id", "content", "tags")
         return [dict(zip(fields, row, strict=True)) for row in rows]

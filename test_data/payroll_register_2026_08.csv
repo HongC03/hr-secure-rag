@@ -1,0 +1,3 @@
+employee_id,employee_name,pay_period,currency,gross_pay,mpf_employee_deduction,optional_benefit_deduction,total_deductions,net_pay
+EMP-001,Alice Chan,2026-08,HKD,42000,1500,630,2130,39870
+EMP-002,Marcus Lee,2026-08,HKD,55000,1500,400,1900,53100

@@ -24,21 +24,39 @@ class RagService:
             return "PostgreSQL pgvector + RLS → LangChain LCEL context/prompt"
         return "LlamaIndex authorised VectorStoreIndex → LangChain LCEL context/prompt"
 
+    def index_document(self, document: dict[str, Any]) -> None:
+        """Persist a new synthetic document before publishing it to the source corpus."""
+        if self.pgvector_repository:
+            self.pgvector_repository.upsert(self.chunking.chunk_document(document), Settings.embed_model)
+
     def retrieve(self, user: dict[str, str], question: str, documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
         permitted_sources = self.access.allowed_documents(user, documents)
-        authorised_chunks = self.chunking.chunk_documents(permitted_sources)
         if self.pgvector_repository:
-            # PostgreSQL RLS filters before ranking; retain application filtering as defence in depth.
-            rows = self.pgvector_repository.search(user, Settings.embed_model.get_query_embedding(question))
-            allowed_ids = {document["id"] for document in permitted_sources}
+            # Both the app allowlist and PostgreSQL RLS filter rows before ranking.
+            allowed_sources = {document["id"]: document for document in permitted_sources}
+            if not allowed_sources:
+                return []
+            rows = self.pgvector_repository.search(
+                user, Settings.embed_model.get_query_embedding(question), sorted(allowed_sources)
+            )
+
+            def allowed_row(row: dict[str, Any]) -> bool:
+                source = allowed_sources.get(row["parent_document_id"])
+                return bool(
+                    source
+                    and all(row[key] == source[key] for key in ("document_type", "classification", "owner_id"))
+                    and self.access.can_read(user, row)
+                )
+
             terms = set(re.findall(r"[a-z]{2,}", question.lower()))
             ranked = []
             for row in rows:
                 corpus = set(re.findall(r"[a-z]{2,}", f"{row['title']} {row['content']} {' '.join(row['tags'])}".lower()))
                 if score := len(terms & corpus):
-                    if row["parent_document_id"] in allowed_ids: ranked.append((score, row))
+                    if allowed_row(row): ranked.append((score, row))
             hits = [row for _, row in sorted(ranked, reverse=True, key=lambda item: item[0])]
-            return self.pgvector_repository.include_neighbours(user, hits)
+            return [row for row in self.pgvector_repository.include_neighbours(user, hits) if allowed_row(row)]
+        authorised_chunks = self.chunking.chunk_documents(permitted_sources)
         if not authorised_chunks: return []
         index = VectorStoreIndex.from_documents([LlamaIndexDocument(text=document_embedding_text(doc["title"], doc["content"]), metadata={"document_id": doc["id"]}) for doc in authorised_chunks])
         candidate_ids = {result.node.metadata["document_id"] for result in index.as_retriever(similarity_top_k=min(3, len(authorised_chunks))).retrieve(question)}
