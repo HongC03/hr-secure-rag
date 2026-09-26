@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import UTC, datetime
 from http import HTTPStatus
@@ -19,6 +20,7 @@ from backend.services.security_service import SecurityService
 from backend.services.session_service import SessionService
 from backend.repositories.pgvector_repository import PgVectorRepository
 from seed import demo_data
+from seed.fixture_data import load_test_documents
 
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = ROOT / "frontend" / "dist"
@@ -27,7 +29,14 @@ ACCESS_SERVICE = AccessService()
 PGVECTOR_REPOSITORY = PgVectorRepository.from_environment()
 RAG_SERVICE = RagService(ACCESS_SERVICE, PGVECTOR_REPOSITORY)
 SECURITY_SERVICE = SecurityService()
-DOCUMENT_REPOSITORY = InMemoryDocumentRepository(demo_data.DOCUMENTS)
+if os.environ.get("LOAD_TEST_DATA") == "1":
+    # Keep source IDs aligned with rows seeded into pgvector. Fixture versions
+    # replace matching demo documents, such as Alice's sample payslip.
+    source_documents = {document["id"]: document for document in demo_data.DOCUMENTS}
+    source_documents.update({document["id"]: document for document in load_test_documents()})
+    DOCUMENT_REPOSITORY = InMemoryDocumentRepository(list(source_documents.values()))
+else:
+    DOCUMENT_REPOSITORY = InMemoryDocumentRepository(demo_data.DOCUMENTS)
 SESSION_SERVICE = SessionService(demo_data.USERS)
 AUDIT_SERVICE = AuditService()
 # Compatibility aliases for existing policy tests and interactive demos.

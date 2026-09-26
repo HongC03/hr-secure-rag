@@ -1,11 +1,15 @@
-import re
+"""Query shape checks and controls that do not depend on matching sensitive text."""
 
 
 class SecurityService:
-    sensitive_patterns = [(r"\b(?:\d[ -]?){13,19}\b", "payment-card-like number"), (r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b", "email address"), (r"\b[A-Z]{1,2}\d{6,9}\b", "identifier-like token")]
-    injection_patterns = [r"ignore (all |previous |prior )?instructions", r"reveal (the )?(system|hidden) prompt", r"bypass (security|access|guardrails)", r"jailbreak"]
+    MAX_QUERY_CHARS = 2000
 
-    def controls_for_query(self, query: str) -> list[str]:
-        controls = [f"audit-redaction:{label}" for pattern, label in self.sensitive_patterns if re.search(pattern, query, re.I)]
-        if any(re.search(pattern, query, re.I) for pattern in self.injection_patterns): controls.append("prompt-injection-block")
-        return controls
+    def normalise_query(self, value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        question = value.strip()
+        return question if question and len(question) <= self.MAX_QUERY_CHARS else None
+
+    def controls_for_query(self) -> list[str]:
+        # The audit event never receives query text, regardless of its contents.
+        return ["audit-metadata-only"]

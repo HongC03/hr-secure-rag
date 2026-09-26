@@ -35,12 +35,11 @@ class ApiController:
         return ApiResponse(200, {"session": token, "user": {"id": user_id, **self.users[user_id]}, "notice": "Demo-only identity switch. Production requires OIDC, MFA, and short-lived server-side sessions."})
 
     def ask(self, user: dict, payload: dict) -> ApiResponse:
-        started, question = time.perf_counter(), str(payload.get("question", "")).strip()
-        if not question: return ApiResponse(400, {"error": "A question is required."})
-        controls = self.security.controls_for_query(question)
-        if "prompt-injection-block" in controls:
-            cid = self.audit.record(user["id"], "rag.query", "blocked", 0, started, controls)
-            return ApiResponse(200, {"status": "blocked", "correlationId": cid, "answer": "Request blocked by the AI safety policy. No documents were retrieved.", "citations": [], "controls": controls})
+        started = time.perf_counter()
+        question = self.security.normalise_query(payload.get("question"))
+        if question is None:
+            return ApiResponse(400, {"error": "Question must be a non-empty string of at most 2000 characters."})
+        controls = self.security.controls_for_query()
         docs = self.rag.retrieve(user, question, self.documents.all()); controls.append("authorise-before-retrieve")
         cid = self.audit.record(user["id"], "rag.query", "grounded" if docs else "no_authorised_source", len(docs), started, controls)
         return ApiResponse(200, {"status": "grounded" if docs else "no_authorised_source", "correlationId": cid, "answer": self.rag.answer(question, docs), "citations": [{"id": doc["id"], "title": doc["title"], "classification": doc["classification"]} for doc in docs], "controls": controls, "pipeline": self.rag.pipeline_name})
@@ -57,6 +56,12 @@ class ApiController:
         title, content, owner = (str(payload.get(key, "")).strip() for key in ("title", "content", "ownerId"))
         if not title or not content or owner not in self.users:
             return ApiResponse(400, {"error": "Title, content, and a valid owner are required."})
-        document = self.documents.create_payslip(title, content, owner)
+        document = self.documents.build_payslip(title, content, owner)
+        try:
+            self.rag.index_document(document)
+        except Exception:
+            cid = self.audit.record(user["id"], "document.ingest", "index_failed", 0, started, ["hr-payroll-ingestion"])
+            return ApiResponse(503, {"error": "Document indexing failed. Please retry.", "correlationId": cid})
+        self.documents.add(document)
         cid = self.audit.record(user["id"], "document.ingest", "accepted", 1, started, ["hr-payroll-ingestion"])
         return ApiResponse(201, {"document": {key: document[key] for key in ("id", "title", "classification", "owner_id")}, "correlationId": cid, "notice": "Synthetic demo document accepted. Production ingestion must malware-scan, classify, encrypt, version, and index asynchronously."})

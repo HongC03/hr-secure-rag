@@ -12,6 +12,8 @@ Authenticated identity → policy decision → permitted document set → retrie
 
 This ordering matters. Filtering after a vector search can leak sensitive content into model context, score/ranking signals, citations, caches, or logs. `AccessService.can_read()` is the application policy-enforcement point; it default-denies documents that do not match an explicit policy.
 
+The query text is never copied into an audit event, regardless of whether it resembles an email, identifier, or payroll detail. Access decisions use document type, classification, and owner metadata rather than patterns found in the question. In this demo, those fields come from server-created records or local synthetic fixtures; a real ingestion path must assign and approve them independently of the uploader. This demo has no connected answer LLM or action tools, so prompt-like text cannot grant new document access. A future model integration still needs separate prompt-injection testing and output controls; a keyword filter alone is not an access policy.
+
 | Demo identity | May read | May not read |
 | --- | --- | --- |
 | Alice, employee | Her own payslip/tax statement; public HR guide | Anyone else's payroll or tax records |
@@ -20,6 +22,26 @@ This ordering matters. Filtering after a vector search can leak sensitive conten
 | Olivia, HR Partner | HR and manager policy documents | Payroll and tax records |
 
 ## Run locally
+
+To start PostgreSQL, the Python API, and the built React frontend together:
+
+```bash
+test -f .env || cp .env.example .env
+# On first use, replace both database passwords in .env with unique, strong values.
+docker compose -f docker-compose.pgvector.yml up --build -d
+```
+
+Open `http://127.0.0.1:5173`. The frontend proxies `/api` to the backend container on port 8001. The backend waits for PostgreSQL, embeds the synthetic demo and Markdown fixture documents, then starts serving requests. The first build installs Python and Node dependencies and may take several minutes. The embedding model must be available from Hugging Face or an existing cache; optional cache and token settings are shown in `.env.example`.
+
+Useful commands:
+
+```bash
+docker compose -f docker-compose.pgvector.yml ps
+docker compose -f docker-compose.pgvector.yml logs -f backend
+docker compose -f docker-compose.pgvector.yml stop
+```
+
+The PostgreSQL volume remains after `stop`. To run the backend directly on your machine instead:
 
 ```bash
 cd hr-secure-rag
@@ -47,7 +69,7 @@ npm run dev
 
 Open the Vite URL (normally `http://127.0.0.1:5173`). Vite proxies `/api` calls to the Python service on port 8001, so browser code never owns the access-policy logic.
 
-For a production-style local build, run `npm run build` from `frontend/`, then restart `python3 app.py`; the Python server detects and serves `frontend/dist` on port 8001.
+For a local build outside Docker, run `npm run build` from `frontend/`, then restart `python3 app.py`; the Python server detects and serves `frontend/dist` on port 8001. The Compose frontend is a separate Nginx service and rebuilds when you run `docker compose -f docker-compose.pgvector.yml up --build -d`.
 
 ## What makes it RAG
 
@@ -59,7 +81,7 @@ For production, replace the local embedder only with a self-hosted or contractua
 
 - `app.py` — application entry point.
 - `backend/controllers/` — request/use-case coordination.
-- `backend/services/` — access policy, prompt security, redacted auditing, sessions, and LlamaIndex/LangChain RAG orchestration.
+- `backend/services/` — access policy, query validation, metadata-only auditing, sessions, and LlamaIndex/LangChain RAG orchestration.
 - `backend/repositories/` — synthetic document storage and the optional pgvector adapter.
 - `seed/` — synthetic demo identities and HR documents used by local tests and pgvector seeding; it must never contain real HR data.
 - `backend/models.py` — shared response contracts.
@@ -67,18 +89,20 @@ For production, replace the local embedder only with a self-hosted or contractua
 
 ## pgvector persistence
 
-The normal local demo uses an in-memory LlamaIndex. Set `PGVECTOR_DATABASE_URL` to switch `RagService` to the PostgreSQL/pgvector repository; it applies PostgreSQL row-level security before cosine-distance retrieval and applies the in-app access policy again as defence in depth.
+The normal direct Python demo uses an in-memory LlamaIndex unless pgvector is configured. The Compose stack configures the PostgreSQL/pgvector repository automatically; it filters by the app-authorised source IDs and PostgreSQL row-level security before cosine-distance ranking.
 
-```bash
-cp .env.example .env
-# Edit .env and set unique, strong passwords before continuing.
-docker compose -f docker-compose.pgvector.yml up -d
-python3 -m pip install -r requirements-pgvector.txt
-python3 scripts/seed_pgvector.py
-python3 app.py
-```
+For direct Python development against the same database, install `requirements-pgvector.txt`, set `PGVECTOR_DATABASE_URL` or use the `.env` application password, and start `python3 app.py`. The Compose backend uses the `postgres` service name instead of `127.0.0.1` to reach the database.
 
 The migration enables `vector`, stores 768-dimensional embeddings, adds an HNSW cosine-distance index, and enforces RLS by `app.user_id` and `app.user_role`. The application database role must be non-owner/non-superuser or PostgreSQL RLS can be bypassed. pgvector supports exact and approximate nearest-neighbour search in Postgres, and its own guidance recommends normal indexes alongside `WHERE` filters. [pgvector documentation](https://github.com/pgvector/pgvector)
+
+The Compose backend seeds the synthetic Markdown files in `test_data/` automatically. For direct Python development or after editing those files outside Docker, run:
+
+```bash
+python3 scripts/seed_test_data.py
+LOAD_TEST_DATA=1 python3 app.py
+```
+
+The seed command parses each Markdown file's metadata, applies the normal document chunking and EmbeddingGemma model, and upserts the vectors. Re-running it updates the same document IDs. The CSV payroll register is a reconciliation fixture and is not indexed because `payroll_register` is not an allowed document type. `LOAD_TEST_DATA=1` also loads the Markdown source IDs into the app's authorisation corpus; otherwise pgvector results from these files are filtered out before an answer.
 
 `backend/orm_models.py` also provides a SQLAlchemy `HrDocumentChunk` mapping as a readable Python view of this table. The SQL migration remains authoritative, and `PgVectorRepository` remains the production access path because it sets the transaction-local RLS identity before querying.
 
@@ -95,7 +119,7 @@ Changing either value after the PostgreSQL data volume has been initialized does
 - OIDC/SAML SSO, MFA, short-lived sessions, device/risk signals; never use the demo identity switch.
 - Attribute-based access control backed by the HRIS: employee relationship, job function, region, legal entity, document type, and declared purpose of use.
 - Encrypt documents and vector indexes with managed keys; separate tenant/legal-entity indexes; avoid cross-boundary backups and caches.
-- Ingest through malware scanning, DLP/classification, OCR quality checks, immutable versioning, retention schedules, and legal-hold controls.
+- Ingest through malware scanning, DLP/classification, independent approval of access labels, OCR quality checks, immutable versioning, retention schedules, and legal-hold controls.
 - Enforce access filters inside the database/vector-store query itself, then perform a second policy check on each retrieved chunk before model context construction.
 - Use an approved private model endpoint or self-hosted model; disable provider training/retention; redact and minimise prompts; prevent model/tool access to raw stores.
 - Send tamper-evident, redacted audit events to the SIEM; alert on privilege changes, bulk retrieval, repeated denied requests, anomalous payroll access, and prompt injection.
@@ -106,5 +130,5 @@ Changing either value after the PostgreSQL data volume has been initialized does
 - `POST /api/login` — creates a **demo-only** session for a synthetic identity.
 - `POST /api/ask` — secure RAG question. Requires `X-Demo-Session`.
 - `GET /api/audit` — available only to `hr_payroll` and `hr_partner` demo roles.
-- `POST /api/documents` — simulated payroll ingestion, limited to `hr_payroll`.
+- `POST /api/documents` — synthetic payroll ingestion, limited to `hr_payroll`. With pgvector enabled, the API indexes the document before returning `201`; an indexing failure returns `503` and leaves the in-memory corpus unchanged. The source allowlist for API-created documents is still process-local, so these records need a persistent source registry before restart-safe retrieval is possible.
 - `GET /api/health` and `GET /api/me`.

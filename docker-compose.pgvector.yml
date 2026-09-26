@@ -8,9 +8,56 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Copy .env.example to .env and set POSTGRES_PASSWORD}
       POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?Copy .env.example to .env and set POSTGRES_APP_PASSWORD}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - ./db/migrations:/docker-entrypoint-initdb.d:ro
       - pgvector_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d peoplevault"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    command: >-
+      sh -c "python scripts/seed_pgvector.py &&
+      python scripts/seed_test_data.py &&
+      python app.py"
+    environment:
+      APP_HOST: 0.0.0.0
+      API_ONLY: "1"
+      LOAD_TEST_DATA: "1"
+      PGVECTOR_DATABASE_HOST: postgres
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?Copy .env.example to .env and set POSTGRES_APP_PASSWORD}
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+    volumes:
+      - ${HF_HUB_CACHE_SOURCE:-huggingface_hub}:/root/.cache/huggingface/hub
+    ports:
+      - "127.0.0.1:8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/api/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "127.0.0.1:5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
 volumes:
   pgvector_data:
+  huggingface_hub:
