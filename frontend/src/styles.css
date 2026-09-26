@@ -8,6 +8,22 @@
   max-width: 420px;
   width: 100%;
 }
+.loginPage > header,
+.loginPage > .identity,
+.loginPage > footer {
+  max-width: 520px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.loginPage > header {
+  padding: 48px 0 24px;
+}
+.loginPage > .identity {
+  padding: 24px;
+}
+.loginPage .identity form {
+  max-width: none;
+}
 .identity input {
   width: 100%;
   padding: 9px;

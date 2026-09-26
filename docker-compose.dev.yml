@@ -1,0 +1,19 @@
+services:
+  frontend:
+    image: hr-secure-rag-frontend-dev
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      target: dev
+    command: ./node_modules/.bin/vite --host 0.0.0.0
+    environment:
+      VITE_API_PROXY_TARGET: http://backend:8001
+      VITE_USE_POLLING: "true"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-5173}:5173"
+    depends_on:
+      backend:
+        condition: service_healthy

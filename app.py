@@ -11,4 +11,8 @@ if __name__ == "__main__":
     host = os.environ.get("APP_HOST", "127.0.0.1")
     server = LoggingHTTPServer((host, 8001), HRHandler)
     LOGGER.info("server_started address=http://%s:8001", host)
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+        PGVECTOR_REPOSITORY.close()

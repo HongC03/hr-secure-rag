@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
-import { getErrorMessage } from '../api/client.ts'
 import { TEXT } from '../constants.ts'
 import type { AuthSubmission, User } from '../types.ts'
 
@@ -32,11 +31,7 @@ export default function AuthPanel({
       return
     }
     setLoginError('')
-    try {
-      await onSubmitAuth({ registering, userId, fullName, password })
-    } catch (error) {
-      setLoginError(getErrorMessage(error))
-    }
+    await onSubmitAuth({ registering, userId, fullName, password })
   }
 
   const toggleMode = () => {
@@ -64,7 +59,7 @@ export default function AuthPanel({
           </button>
         </>
       ) : (
-        <form onSubmit={submit}>
+        <form onSubmit={submit} noValidate>
           <div>
             <b>
               {registering
@@ -83,9 +78,6 @@ export default function AuthPanel({
             placeholder={registering ? TEXT.login.username : TEXT.login.userId}
             value={userId}
             onChange={(event) => setUserId(event.target.value)}
-            required
-            minLength={registering ? 3 : undefined}
-            maxLength={registering ? 32 : undefined}
           />
           {registering && (
             <input
@@ -94,8 +86,6 @@ export default function AuthPanel({
               placeholder={TEXT.login.fullName}
               value={fullName}
               onChange={(event) => setFullName(event.target.value)}
-              required
-              maxLength={120}
             />
           )}
           <input
@@ -105,8 +95,6 @@ export default function AuthPanel({
             placeholder={TEXT.login.password}
             value={password}
             onChange={(event) => setPassword(event.target.value)}
-            required
-            minLength={registering ? 8 : undefined}
           />
           {registering && (
             <input
@@ -116,7 +104,6 @@ export default function AuthPanel({
               placeholder={TEXT.login.confirmPassword}
               value={confirmPassword}
               onChange={(event) => setConfirmPassword(event.target.value)}
-              required
             />
           )}
           <button type="submit" disabled={busy}>

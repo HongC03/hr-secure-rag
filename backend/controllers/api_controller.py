@@ -45,7 +45,7 @@ class ApiController:
         if user is None:
             return ApiResponse(401, {"error": api_error_message.INVALID_CREDENTIALS})
         try:
-            token = self.sessions.create(user_id)
+            token = self.sessions.create(user["id"])
         except self.users.psycopg.Error:
             return ApiResponse(503, {"error": api_error_message.ACCOUNT_DATABASE_UNAVAILABLE})
         if token is None:

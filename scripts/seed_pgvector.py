@@ -10,8 +10,9 @@ from backend.services.embedding_service import EmbeddingGemmaEmbedding
 from seed.demo_data import DOCUMENTS
 
 repository = PgVectorRepository.from_environment()
-if not repository:
-    raise SystemExit("Set PGVECTOR_DATABASE_URL before seeding.")
-chunks = DocumentChunkingService().chunk_documents(DOCUMENTS)
-repository.upsert(chunks, EmbeddingGemmaEmbedding())
-print(f"Indexed {len(chunks)} synthetic document chunks in pgvector.")
+try:
+    chunks = DocumentChunkingService().chunk_documents(DOCUMENTS)
+    repository.upsert(chunks, EmbeddingGemmaEmbedding())
+    print(f"Indexed {len(chunks)} synthetic document chunks in pgvector.")
+finally:
+    repository.close()

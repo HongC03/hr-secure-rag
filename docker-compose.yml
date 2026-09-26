@@ -52,16 +52,6 @@ services:
       retries: 30
       start_period: 30s
 
-  frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.frontend
-    ports:
-      - "127.0.0.1:5173:80"
-    depends_on:
-      backend:
-        condition: service_healthy
-
 volumes:
   pgvector_data:
   huggingface_hub:

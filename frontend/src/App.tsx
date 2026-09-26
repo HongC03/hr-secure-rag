@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, getErrorMessage } from './api/client.ts'
+import { api, getErrorMessage, takeRedirectError } from './api/client.ts'
 import AuditPanel from './components/AuditPanel.tsx'
 import AuthPanel from './components/AuthPanel.tsx'
 import ControlsPanel from './components/ControlsPanel.tsx'
@@ -30,6 +30,12 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [authChecked, setAuthChecked] = useState(false)
 
+  useEffect(() => {
+    if (!requestError) return
+    const timeout = window.setTimeout(() => setRequestError(''), 7000)
+    return () => window.clearTimeout(timeout)
+  }, [requestError])
+
   const loadAudit = async (account: User | null) => {
     if (!account || !['hr_payroll', 'hr_partner'].includes(account.role)) {
       setEvents([])
@@ -59,6 +65,8 @@ export default function App() {
         : { userId, password }
       await api(path, { method: 'POST', body: JSON.stringify(body) })
       window.location.replace(ROUTES.home)
+    } catch (error) {
+      setRequestError(getErrorMessage(error))
     } finally {
       setBusy(false)
     }
@@ -97,6 +105,8 @@ export default function App() {
   }
 
   useEffect(() => {
+    const redirectedError = takeRedirectError()
+    if (redirectedError) setRequestError(redirectedError)
     api<HealthResponse>(API_PATHS.health)
       .then((data) => setPolicy(data.policyVersion))
       .catch((error) => {
@@ -121,7 +131,7 @@ export default function App() {
   }, [])
 
   return (
-    <main>
+    <main className={isLoginPage ? 'loginPage' : undefined}>
       <SiteNav policy={policy} />
       <RequestErrorBanner
         message={requestError}
