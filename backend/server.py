@@ -54,6 +54,11 @@ def configure_server_logging() -> None:
 
 ACCESS_SERVICE = AccessService()
 PGVECTOR_REPOSITORY = PgVectorRepository.from_environment()
+try:
+    PGVECTOR_REPOSITORY.ensure_ready()
+except Exception:
+    PGVECTOR_REPOSITORY.close()
+    raise
 RAG_SERVICE = RagService(ACCESS_SERVICE, PGVECTOR_REPOSITORY, llm_from_environment())
 SECURITY_SERVICE = SecurityService()
 if os.environ.get("LOAD_TEST_DATA") == "1":
@@ -64,7 +69,7 @@ if os.environ.get("LOAD_TEST_DATA") == "1":
     DOCUMENT_REPOSITORY = InMemoryDocumentRepository(list(source_documents.values()))
 else:
     DOCUMENT_REPOSITORY = InMemoryDocumentRepository(demo_data.DOCUMENTS)
-USER_REPOSITORY = UserRepository.from_environment()
+USER_REPOSITORY = UserRepository.from_environment(pool=PGVECTOR_REPOSITORY.pool)
 SESSION_SERVICE = SessionService(USER_REPOSITORY)
 AUDIT_SERVICE = AuditService()
 # Compatibility aliases for existing policy tests and interactive demos.
@@ -87,10 +92,6 @@ def allowed_documents(user: dict[str, str]) -> list[dict[str, Any]]:
 
 def retrieve_authorised(user: dict[str, str], question: str) -> list[dict[str, Any]]:
     """Search only the caller's permitted corpus—important to prevent RAG data leakage."""
-    return RAG_SERVICE.retrieve(user, question, DOCUMENT_REPOSITORY.all())
-
-def llamaindex_authorised_retrieval(user: dict[str, str], question: str) -> list[dict[str, Any]]:
-    """Compatibility name for the in-memory LlamaIndex retrieval path."""
     return RAG_SERVICE.retrieve(user, question, DOCUMENT_REPOSITORY.all())
 
 class HRHandler(SimpleHTTPRequestHandler):
@@ -198,4 +199,8 @@ if __name__ == "__main__":
         raise SystemExit("React build is missing. Run: cd frontend && npm run build")
     server = LoggingHTTPServer(("127.0.0.1", 8001), HRHandler)
     LOGGER.info("server_started address=http://127.0.0.1:8001")
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+        PGVECTOR_REPOSITORY.close()

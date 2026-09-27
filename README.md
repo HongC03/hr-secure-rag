@@ -23,37 +23,52 @@ The query text is never copied into an audit event, regardless of whether it res
 
 ## Run locally
 
-To start PostgreSQL, the Python API, and the built React frontend together:
+The shared `docker-compose.yml` defines PostgreSQL and the Python API. Add `docker-compose.dev.yml` for a Vite frontend with hot reload, or `docker-compose.prod.yml` for a built frontend served by Nginx. To start the development stack:
 
 ```bash
 test -f .env || cp .env.example .env
 # On first use, replace both database passwords in .env with unique, strong values.
-docker compose -f docker-compose.pgvector.yml up --build -d
-docker compose -f docker-compose.pgvector.yml exec -T postgres psql -U postgres -d peoplevault -v ON_ERROR_STOP=1 -f /docker-entrypoint-initdb.d/003_app_users.sql
-docker compose -f docker-compose.pgvector.yml exec -T postgres psql -U postgres -d peoplevault -v ON_ERROR_STOP=1 -f /docker-entrypoint-initdb.d/004_self_registration.sql
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --wait postgres
+docker compose -f docker-compose.yml -f docker-compose.dev.yml exec -T postgres psql -U postgres -d peoplevault -v ON_ERROR_STOP=1 -f /docker-entrypoint-initdb.d/003_app_users.sql
+docker compose -f docker-compose.yml -f docker-compose.dev.yml exec -T postgres psql -U postgres -d peoplevault -v ON_ERROR_STOP=1 -f /docker-entrypoint-initdb.d/004_self_registration.sql
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
 
-Open `http://127.0.0.1:5173` and create an employee account in the app. Registration assigns a separate generated account ID, so it cannot claim the ownership ID of an existing payslip. The new account can read general HR guides; an administrator must link it to private records. To use the seeded Alice, Marcus, Priya, or Olivia profiles, run `python3 scripts/manage_user.py alice --via-container` (replace `alice` as needed) and choose a password. The command stores only its salted hash in PostgreSQL. The frontend proxies `/api` to the backend container on port 8001. The backend waits for PostgreSQL, embeds the synthetic demo and Markdown fixture documents, then starts serving requests. The first build installs Python and Node dependencies and may take several minutes. The embedding model must be available from Hugging Face or an existing cache; optional cache and token settings are shown in `.env.example`.
+Leave the final command running to see logs from all three services. Open `http://127.0.0.1:5173` and create an employee account in the app. If another local server uses port 5173, run `FRONTEND_PORT=5174 docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build` and open `http://127.0.0.1:5174` instead. Edits under `frontend/` reload in the browser without rebuilding; changes to frontend dependencies require rebuilding and renewing the container's dependency volume with `docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build --renew-anon-volumes`.
+
+To serve the built frontend through Nginx, use the production Compose file after the database setup above:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build
+```
+
+Both frontend modes use the same backend and PostgreSQL services, so run one mode at a time. `FRONTEND_PORT` also changes the host port for the production frontend. The production Compose file selects the static frontend image; the application still uses synthetic demo data and needs a deployment security review before serving real HR records.
+
+Registration assigns a separate generated account ID, so it cannot claim the ownership ID of an existing payslip. The new account can read general HR guides; an administrator must link it to private records. To use the seeded Alice, Marcus, Priya, or Olivia profiles, run `python3 scripts/manage_user.py alice --via-container` (replace `alice` as needed) and choose a password. The command stores only its salted hash in PostgreSQL. Both frontends proxy `/api` to the backend container on port 8001. The backend waits for PostgreSQL, embeds the synthetic demo and Markdown fixture documents, then starts serving requests. The first build installs Python and Node dependencies and may take several minutes. The embedding model must be available from Hugging Face or an existing cache; optional cache and token settings are shown in `.env.example`.
 
 To generate answers, set `LLM_PROVIDER=gpt` with `OPENAI_API_KEY`, or `LLM_PROVIDER=deepseek` with `DEEPSEEK_API_KEY` in `.env` before starting the backend. The default model and URL for each provider are defined in `backend/services/llm_config.py`. Only one provider is active at a time. The question and retrieved HR document text leave the backend for the selected provider, so use synthetic data unless that data transfer is approved. With no provider configured, questions with retrieved sources return `503`; questions with no authorised source still return the normal no-source answer.
 
 Useful commands:
 
 ```bash
-docker compose -f docker-compose.pgvector.yml ps
-docker compose -f docker-compose.pgvector.yml logs -f backend
-docker compose -f docker-compose.pgvector.yml stop
+docker compose -f docker-compose.yml -f docker-compose.dev.yml ps
+docker compose -f docker-compose.yml -f docker-compose.dev.yml logs -f frontend backend
+docker compose -f docker-compose.yml -f docker-compose.dev.yml stop
 ```
 
-The PostgreSQL volume remains after `stop`. To run the backend directly on your machine instead:
+Use `docker-compose.prod.yml` in these commands when running the static frontend. The PostgreSQL volume remains after `stop`. For direct Python development, start only PostgreSQL/pgvector with the database-only Compose file. It uses the same migrations and named volume as the full stack when run from this project directory:
 
 ```bash
-cd hr-secure-rag
-python3 -m pip install -r requirements-pgvector.txt
-python3 app.py
+test -f .env || cp .env.example .env
+# On first use, replace both database passwords in .env with unique, strong values.
+docker compose -f docker-compose.db.yml up -d --wait
+python3 -m pip install -r requirements.txt
+python3 scripts/seed_pgvector.py
+python3 scripts/seed_test_data.py
+API_ONLY=1 LOAD_TEST_DATA=1 python3 app.py
 ```
 
-Open `http://127.0.0.1:8001` and register or sign in. The direct Python app requires the same PostgreSQL account database. Administrator-provisioned Alice can retrieve her own synthetic payslip; Marcus cannot retrieve it; Priya can, because she is HR Payroll.
+The database-only command starts no backend or frontend container. Stop it with `docker compose -f docker-compose.db.yml stop`; its data volume remains. The direct Python app requires PostgreSQL with pgvector and the account migrations; configure `PGVECTOR_DATABASE_URL` or `POSTGRES_APP_PASSWORD` in `.env` before starting it. It fails at startup if the database or required tables are unavailable. With `API_ONLY=1`, the API runs at `http://127.0.0.1:8001`; start Vite separately for the React UI. Administrator-provisioned Alice can retrieve her own synthetic payslip; Marcus cannot retrieve it; Priya can, because she is HR Payroll.
 
 Run the policy checks:
 
@@ -73,20 +88,20 @@ npm run dev
 
 Open the Vite URL (normally `http://127.0.0.1:5173`). Vite proxies `/api` calls to the Python service on port 8001, so browser code never owns the access-policy logic.
 
-For a local build outside Docker, run `npm run build` from `frontend/`, then restart `python3 app.py`; the Python server detects and serves `frontend/dist` on port 8001. The Compose frontend is a separate Nginx service and rebuilds when you run `docker compose -f docker-compose.pgvector.yml up --build -d`. The backend writes UTC startup, request, and server-error logs to standard output; use `docker compose -f docker-compose.pgvector.yml logs -f backend` to follow them. Request logs include method, path, status, and duration, but omit query strings, headers, and bodies. Set `LOG_LEVEL` to `DEBUG`, `WARNING`, or `ERROR` to adjust verbosity (default: `INFO`).
+For a local build outside Docker, run `npm run build` from `frontend/`, then restart `python3 app.py`; the Python server detects and serves `frontend/dist` on port 8001. The development Compose frontend runs Vite with the source directory mounted for hot reload. Its container logs show Vite output; browser `console` messages remain in browser developer tools. The backend writes UTC startup, request, and server-error logs to standard output. Request logs include method, path, status, and duration, but omit query strings, headers, and bodies. Set `LOG_LEVEL` to `DEBUG`, `WARNING`, or `ERROR` to adjust verbosity (default: `INFO`).
 
 ## What makes it RAG
 
-`llamaindex_authorised_retrieval()` creates a LlamaIndex `VectorStoreIndex` from only the policy-permitted corpus. `RagService.answer()` formats the retrieved documents with their IDs and asks the selected GPT or DeepSeek service to answer from that context. The local Google EmbeddingGemma model keeps retrieval local; enabling an answer provider sends the selected context to its API. A lexical relevance threshold prevents irrelevant vector results from becoming answers.
+`RagService.retrieve()` sends only policy-permitted source IDs to PostgreSQL/pgvector, where row-level security also applies before vector ranking. It rechecks retrieved chunks against the source metadata and access policy. `RagService.answer()` formats the retrieved documents with their IDs and asks the selected GPT or DeepSeek service to answer from that context. The local Google EmbeddingGemma model keeps embedding local; enabling an answer provider sends the selected context to its API. A lexical relevance threshold prevents irrelevant vector results from becoming answers.
 
-For production, use a self-hosted or contractually approved model endpoint, persist the index in an access-filtering vector store, and review model output for unsupported claims and prompt injection. The authorisation check must still happen before retrieval and answer generation. Retrieval follows the [LlamaIndex VectorStoreIndex guide](https://developers.llamaindex.ai/python/framework/module_guides/indexing/vector_store_index/).
+For production, use a self-hosted or contractually approved model endpoint and review model output for unsupported claims and prompt injection. The authorisation check must still happen before retrieval and answer generation.
 
 ## Backend layout
 
 - `app.py` — application entry point.
 - `backend/controllers/` — request/use-case coordination.
 - `backend/services/` — access policy, password hashing, query validation, metadata-only auditing, sessions, RAG orchestration, and separate GPT/DeepSeek answer providers.
-- `backend/repositories/` — synthetic document storage and the optional pgvector adapter.
+- `backend/repositories/` — synthetic source-document storage and the required PostgreSQL/pgvector adapter.
 - `seed/` — synthetic demo identities and HR documents used by local tests and pgvector seeding; it must never contain real HR data.
 - `backend/models.py` — shared response contracts.
 - `backend/server.py` — thin HTTP/static React-bundle adapter.
@@ -96,17 +111,17 @@ For production, use a self-hosted or contractually approved model endpoint, pers
 `db/migrations/003_app_users.sql` creates the account table; `004_self_registration.sql` adds public employee registration with a separate `@username` login. PostgreSQL runs both automatically for a new volume. For an existing volume, apply both before rebuilding the backend:
 
 ```bash
-docker compose -f docker-compose.pgvector.yml exec -T postgres psql -U postgres -d peoplevault -v ON_ERROR_STOP=1 -f /docker-entrypoint-initdb.d/003_app_users.sql
-docker compose -f docker-compose.pgvector.yml exec -T postgres psql -U postgres -d peoplevault -v ON_ERROR_STOP=1 -f /docker-entrypoint-initdb.d/004_self_registration.sql
+docker compose -f docker-compose.yml exec -T postgres psql -U postgres -d peoplevault -v ON_ERROR_STOP=1 -f /docker-entrypoint-initdb.d/003_app_users.sql
+docker compose -f docker-compose.yml exec -T postgres psql -U postgres -d peoplevault -v ON_ERROR_STOP=1 -f /docker-entrypoint-initdb.d/004_self_registration.sql
 ```
 
 The application database role can read accounts and insert employee accounts, but cannot update roles or passwords. The registration API accepts a username, full name, and password; it assigns an employee role and a random `self_...` user ID, and returns a `@username` login name. It ignores any client-supplied role or document owner ID. `scripts/manage_user.py --via-container` uses the running PostgreSQL container's local administrator socket to create or reset an account. Without that flag, the script connects directly using the local PostgreSQL administrator password from the ignored `.env` file and requires `psycopg` and `python-dotenv`. For an administrator-provisioned account, provide `--name`, `--role`, and `--department`; only an administrator running this script can assign a privileged role. Passwords are hashed with salted scrypt before insertion. The HTTP API never exposes password hashes.
 
 Successful sign in creates an opaque, server-side session that expires after eight hours. The browser stores only an HTTP-only, SameSite=Strict cookie; it receives the Secure attribute when served over HTTPS. Sign out revokes the session. Sessions are process-local, so restarting the backend signs everyone out. Use HTTPS for any deployment beyond local development.
 
-The normal direct Python demo uses an in-memory LlamaIndex unless pgvector is configured. The Compose stack configures the PostgreSQL/pgvector repository automatically; it filters by the app-authorised source IDs and PostgreSQL row-level security before cosine-distance ranking.
+All app runs use PostgreSQL/pgvector retrieval. The Compose stack configures the database automatically; retrieval filters by the app-authorised source IDs and PostgreSQL row-level security before cosine-distance ranking.
 
-For direct Python development against the same database, install `requirements-pgvector.txt`, set `PGVECTOR_DATABASE_URL` or use the `.env` application password, and start `python3 app.py`. The Compose backend uses the `postgres` service name instead of `127.0.0.1` to reach the database.
+For direct Python development against the same database, install `requirements.txt`, set `PGVECTOR_DATABASE_URL` or use the `.env` application password, and start `python3 app.py`. The Compose backend uses the `postgres` service name instead of `127.0.0.1` to reach the database.
 
 The migration enables `vector`, stores 768-dimensional embeddings, adds an HNSW cosine-distance index, and enforces RLS by `app.user_id` and `app.user_role`. The application database role must be non-owner/non-superuser or PostgreSQL RLS can be bypassed. pgvector supports exact and approximate nearest-neighbour search in Postgres, and its own guidance recommends normal indexes alongside `WHERE` filters. [pgvector documentation](https://github.com/pgvector/pgvector)
 
@@ -125,7 +140,7 @@ The seed command parses each Markdown file's metadata, applies the normal docume
 
 Payslips and tax statements remain a single database row: their labels, amounts, and privacy context must never be separated. Long HR policies and payroll runbooks are split into overlapping word-based chunks during indexing. Each row preserves the source document identity (`parent_document_id`) and position (`chunk_index`). When retrieval finds a chunk, the service retrieves its immediate authorised neighbours before composing context. This improves answers that span a section boundary while ensuring both the in-app policy and PostgreSQL RLS apply to every added chunk.
 
-Docker Compose automatically reads the Git-ignored `.env` file. Set separate strong values for `POSTGRES_PASSWORD` (the local PostgreSQL superuser) and `POSTGRES_APP_PASSWORD` (the application role). The application and the seed script also load `.env` automatically after the pgvector requirements are installed; an explicitly set `PGVECTOR_DATABASE_URL` takes precedence for deployments. `.env.example` is the only environment file intended for Git.
+Docker Compose automatically reads the Git-ignored `.env` file. Set separate strong values for `POSTGRES_PASSWORD` (the local PostgreSQL superuser) and `POSTGRES_APP_PASSWORD` (the application role). The application and the seed script also load `.env` automatically; an explicitly set `PGVECTOR_DATABASE_URL` takes precedence for deployments. `.env.example` is the only environment file intended for Git.
 
 Changing either value after the PostgreSQL data volume has been initialized does not rotate the corresponding database role. Rotate the role separately, or recreate the local development volume if its data can be discarded.
 
@@ -147,5 +162,5 @@ Changing either value after the PostgreSQL data volume has been initialized does
 - `POST /api/logout` — revokes the current session and clears its cookie.
 - `POST /api/ask` — secure RAG question. Requires a valid session cookie.
 - `GET /api/audit` — available only to `hr_payroll` and `hr_partner` demo roles.
-- `POST /api/documents` — synthetic payroll ingestion, limited to `hr_payroll`. With pgvector enabled, the API indexes the document before returning `201`; an indexing failure returns `503` and leaves the in-memory corpus unchanged. The source allowlist for API-created documents is still process-local, so these records need a persistent source registry before restart-safe retrieval is possible.
+- `POST /api/documents` — synthetic payroll ingestion, limited to `hr_payroll`. The API indexes the document in pgvector before returning `201`; an indexing failure returns `503` and leaves the in-memory source corpus unchanged. The source allowlist for API-created documents is still process-local, so these records need a persistent source registry before restart-safe retrieval is possible.
 - `GET /api/health` and `GET /api/me`.

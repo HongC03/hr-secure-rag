@@ -1,10 +1,6 @@
-"""Local EmbeddingGemma adapter shared by LlamaIndex and pgvector."""
+"""Local EmbeddingGemma adapter for pgvector."""
 
 from typing import Any
-
-from llama_index.core.embeddings import BaseEmbedding
-from pydantic import PrivateAttr
-
 
 MODEL_ID = "google/embeddinggemma-300M"
 EMBEDDING_DIMENSIONS = 768
@@ -15,11 +11,12 @@ def document_embedding_text(title: str, content: str) -> str:
     return f"title: {title} | text: {content}"
 
 
-class EmbeddingGemmaEmbedding(BaseEmbedding):
-    """LlamaIndex-compatible, on-device Google EmbeddingGemma embedding model."""
+class EmbeddingGemmaEmbedding:
+    """On-device Google EmbeddingGemma embedding model."""
 
-    model_name: str = MODEL_ID
-    _model: Any = PrivateAttr(default=None)
+    def __init__(self, model_name: str = MODEL_ID) -> None:
+        self.model_name = model_name
+        self._model: Any = None
 
     @property
     def model(self) -> Any:
@@ -51,11 +48,17 @@ class EmbeddingGemmaEmbedding(BaseEmbedding):
             )
         )
 
+    def get_query_embedding(self, query: str) -> list[float]:
+        return self._get_query_embedding(query)
+
     async def _aget_query_embedding(self, query: str) -> list[float]:
         return self._get_query_embedding(query)
 
     def _get_text_embedding(self, text: str) -> list[float]:
         return self._as_embedding(self.model.encode(text, normalize_embeddings=True))
+
+    def get_text_embedding(self, text: str) -> list[float]:
+        return self._get_text_embedding(text)
 
     def _get_text_embeddings(self, texts: list[str]) -> list[list[float]]:
         vectors = self.model.encode(texts, normalize_embeddings=True)

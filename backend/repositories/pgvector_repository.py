@@ -1,4 +1,4 @@
-"""PostgreSQL + pgvector adapter. Enabled only when PGVECTOR_DATABASE_URL is set."""
+"""PostgreSQL + pgvector adapter for the required application database."""
 from __future__ import annotations
 
 import os
@@ -19,16 +19,21 @@ def _load_local_dotenv() -> None:
 
 
 class PgVectorRepository:
-    def __init__(self, database_url: str) -> None:
+    def __init__(self, database_url: str, pool: Any = None) -> None:
         try:
             import psycopg  # type: ignore
+            from psycopg_pool import ConnectionPool  # type: ignore
         except ImportError as error:
-            raise RuntimeError("Install pgvector dependencies: pip install -r requirements-pgvector.txt") from error
+            raise RuntimeError("Install application dependencies: pip install -r requirements.txt") from error
         self.psycopg = psycopg
         self.database_url = database_url
+        self._owns_pool = pool is None
+        self.pool = pool if pool is not None else ConnectionPool(
+            database_url, min_size=1, max_size=10, kwargs={"connect_timeout": 5}, open=True
+        )
 
     @classmethod
-    def from_environment(cls) -> "PgVectorRepository | None":
+    def database_url_from_environment(cls) -> str:
         _load_local_dotenv()
         url = os.environ.get("PGVECTOR_DATABASE_URL")
         if not url:
@@ -42,7 +47,25 @@ class PgVectorRepository:
                     f"postgresql://{quote(user, safe='')}:{quote(password, safe='')}"
                     f"@{host}:{port}/{quote(database, safe='')}"
                 )
-        return cls(url) if url else None
+        if not url:
+            raise RuntimeError("Configure PGVECTOR_DATABASE_URL or POSTGRES_APP_PASSWORD before starting the app.")
+        return url
+
+    @classmethod
+    def from_environment(cls, pool: Any = None) -> "PgVectorRepository":
+        return cls(cls.database_url_from_environment(), pool=pool)
+
+    def close(self) -> None:
+        if self._owns_pool:
+            self.pool.close()
+
+    def ensure_ready(self) -> None:
+        """Fail startup when the required database schema is unavailable."""
+        with self.pool.connection(timeout=5) as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT to_regclass('hr_document_chunks'), to_regclass('app_users')")
+            tables = cursor.fetchone()
+            if tables is None or not all(tables):
+                raise RuntimeError("PostgreSQL is missing the required pgvector or account tables. Apply the database migrations.")
 
     @staticmethod
     def _vector_literal(vector: list[float]) -> str:
@@ -71,7 +94,7 @@ class PgVectorRepository:
             ORDER BY embedding <=> %s::vector
             LIMIT %s
         """
-        with self.psycopg.connect(self.database_url) as connection, connection.cursor() as cursor:
+        with self.pool.connection() as connection, connection.cursor() as cursor:
             self._set_security_context(cursor, user)
             cursor.execute(sql, (allowed_document_ids, self._vector_literal(query_embedding), limit))
             rows = cursor.fetchall()
@@ -90,7 +113,7 @@ class PgVectorRepository:
         """
         fields = ("id", "parent_document_id", "chunk_index", "title", "document_type", "classification", "owner_id", "content", "tags")
         found: dict[str, dict[str, Any]] = {}
-        with self.psycopg.connect(self.database_url) as connection, connection.cursor() as cursor:
+        with self.pool.connection() as connection, connection.cursor() as cursor:
             self._set_security_context(cursor, user)
             for hit in hits:
                 cursor.execute(sql, (hit["parent_document_id"], max(0, hit["chunk_index"] - window), hit["chunk_index"] + window))
@@ -115,7 +138,7 @@ class PgVectorRepository:
         """
         # Index jobs run as a dedicated HR Payroll service principal; RLS checks it.
         service_identity = {"id": "indexer", "role": "hr_payroll"}
-        with self.psycopg.connect(self.database_url) as connection, connection.cursor() as cursor:
+        with self.pool.connection() as connection, connection.cursor() as cursor:
             self._set_security_context(cursor, service_identity)
             for document in documents:
                 vector = embedding_model.get_text_embedding(

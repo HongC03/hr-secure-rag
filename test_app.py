@@ -5,10 +5,10 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import app
 from backend.controllers.api_controller import ApiController
 from backend.repositories.document_repository import InMemoryDocumentRepository
 from backend.repositories.pgvector_repository import PgVectorRepository
+from backend.repositories.user_repository import UserRepository
 from backend.orm_models import HrDocumentChunk
 from backend.services.access_service import AccessService
 from backend.services.audit_service import AuditService
@@ -18,11 +18,15 @@ from backend.services.deepseek_service import DeepSeekService
 from backend.services.gpt_service import GptService
 from backend.services.llm_factory import llm_from_environment
 from backend.services.llm_service import LlmUnavailableError
+from backend.services.password_service import hash_password
 from backend.services.rag_service import RagService
 from backend.services.security_service import SecurityService
 from backend.services.session_service import SessionService
-from backend.server import HRHandler
 from seed.demo_data import DOCUMENTS, USERS
+
+with patch.object(PgVectorRepository, "from_environment", return_value=MagicMock()), patch.object(UserRepository, "from_environment", return_value=MagicMock()):
+    import app
+from backend.server import HRHandler
 
 
 def user(user_id): return {"id": user_id, **USERS[user_id]}
@@ -30,8 +34,14 @@ def user(user_id): return {"id": user_id, **USERS[user_id]}
 
 class AccessPolicyTests(unittest.TestCase):
     def setUp(self):
-        # Policy tests exercise the in-memory path even when a local .env exists.
-        self.enterContext(patch.object(app.RAG_SERVICE, "pgvector_repository", None))
+        repository = MagicMock()
+        repository.search.side_effect = lambda _user, _embedding, allowed_ids: [
+            {**doc, "parent_document_id": doc["id"], "chunk_index": 0}
+            for doc in DOCUMENTS if doc["id"] in allowed_ids
+        ]
+        repository.include_neighbours.side_effect = lambda _user, hits: hits
+        self.enterContext(patch.object(app.RAG_SERVICE, "pgvector_repository", repository))
+        self.enterContext(patch.object(EmbeddingGemmaEmbedding, "_get_query_embedding", return_value=[0.0]))
 
     def test_server_log_omits_query_string_and_message_details(self):
         handler = HRHandler.__new__(HRHandler)
@@ -64,6 +74,57 @@ class AccessPolicyTests(unittest.TestCase):
         self.assertEqual(valid_password.status, 201)
         users.register.assert_called_once_with("newuser", "New User", "12345678")
 
+    def test_registered_username_can_sign_in_with_same_password(self):
+        pool = MagicMock()
+        cursor = pool.connection.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
+        account = None
+        fetched = None
+
+        def execute(query, parameters):
+            nonlocal account, fetched
+            if query.startswith("INSERT INTO app_users"):
+                user_id, login_name, name, department, label, password_hash = parameters
+                account = (user_id, name, "employee", department, label, login_name, password_hash)
+                fetched = account[:6]
+            elif "password_hash" in query and "FROM app_users" in query:
+                fetched = account if account and (account[0] == parameters[0] or account[5] == parameters[1]) else None
+            else:
+                fetched = account[:6] if account and account[0] == parameters[0] else None
+
+        cursor.execute.side_effect = execute
+        cursor.fetchone.side_effect = lambda: fetched
+        cursor.fetchall.side_effect = lambda: [fetched] if fetched else []
+        users = UserRepository("unused", pool=pool)
+        sessions = SessionService(users)
+        controller = ApiController(users, MagicMock(), sessions, MagicMock(), MagicMock(), MagicMock())
+
+        registered = controller.register({"username": "newuser", "name": "New User", "password": "test-password"})
+        self.assertEqual(registered.status, 201)
+
+        for username in ("newuser", "@newuser"):
+            with self.subTest(username=username):
+                signed_in = controller.login({"userId": username, "password": "test-password"})
+                self.assertEqual(signed_in.status, 200)
+                self.assertEqual(signed_in.body["user"]["id"], registered.body["user"]["id"])
+                self.assertEqual(sessions.user_for_token(signed_in.body["session"])["id"], registered.body["user"]["id"])
+
+        wrong_password = controller.login({"userId": "newuser", "password": "wrong-password"})
+        self.assertEqual(wrong_password.status, 401)
+
+    def test_username_matching_an_existing_user_id_checks_both_passwords(self):
+        pool = MagicMock()
+        cursor = pool.connection.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = [
+            ("alice", "Legacy Alice", "employee", "HR", "Employee", None, hash_password("legacy-password")),
+            ("self_123", "New Alice", "employee", "Unverified", "Self-registered employee", "@alice", hash_password("new-password")),
+        ]
+        users = UserRepository("unused", pool=pool)
+
+        self.assertEqual(users.authenticate("alice", "legacy-password")["id"], "alice")
+        self.assertEqual(users.authenticate("alice", "new-password")["id"], "self_123")
+        self.assertIsNone(users.authenticate("alice", "wrong-password"))
+        self.assertEqual(cursor.execute.call_args.args[1], ("alice", "@alice", "alice"))
+
     def test_orm_mapping_matches_hr_document_chunks_table(self):
         self.assertEqual(HrDocumentChunk.__tablename__, "hr_document_chunks")
         self.assertEqual(HrDocumentChunk.embedding.type.dim, 768)
@@ -72,6 +133,24 @@ class AccessPolicyTests(unittest.TestCase):
         migration = (Path(__file__).parent / "db/migrations/001_hr_document_chunks.sql").read_text()
         self.assertIn("parent_document_id TEXT NOT NULL", migration)
         self.assertIn("chunk_index INTEGER NOT NULL DEFAULT 0", migration)
+
+    def test_pgvector_configuration_is_required(self):
+        with patch("backend.repositories.pgvector_repository._load_local_dotenv"), patch.dict("os.environ", {}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "Configure PGVECTOR_DATABASE_URL"):
+                PgVectorRepository.from_environment()
+
+    def test_rag_requires_pgvector_repository(self):
+        with self.assertRaisesRegex(ValueError, "pgvector repository is required"):
+            RagService(AccessService(), None)
+
+    def test_pgvector_schema_is_required_at_startup(self):
+        pool = MagicMock()
+        repository = PgVectorRepository("unused", pool=pool)
+        cursor = pool.connection.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = ("hr_document_chunks", None)
+        with self.assertRaisesRegex(RuntimeError, "Apply the database migrations"):
+            repository.ensure_ready()
+        pool.connection.assert_called_once_with(timeout=5)
 
     def test_payslip_is_never_split_into_multiple_chunks(self):
         document = {**next(doc for doc in DOCUMENTS if doc["document_type"] == "payslip"), "content": "pay " * 500}
@@ -110,22 +189,24 @@ class AccessPolicyTests(unittest.TestCase):
         docs = app.retrieve_authorised(user("marcus"), "Alice August net pay payslip")
         self.assertFalse(any(doc["document_type"] == "payslip" for doc in docs))
 
-    def test_llamaindex_never_receives_unapproved_payroll_document(self):
-        docs = app.llamaindex_authorised_retrieval(user("marcus"), "Alice August net pay payslip")
+    def test_pgvector_never_receives_unapproved_payroll_document(self):
+        docs = app.retrieve_authorised(user("marcus"), "Alice August net pay payslip")
         self.assertFalse(any(doc["document_type"] == "payslip" for doc in docs))
+        allowed_ids = app.RAG_SERVICE.pgvector_repository.search.call_args.args[2]
+        self.assertNotIn("pay-alice-2026-08", allowed_ids)
 
     def test_answer_sends_only_authorised_context_to_llm(self):
         docs = app.retrieve_authorised(user("alice"), "August net pay")
         llm = MagicMock()
         llm.answer.return_value = "Net pay is HKD 39,870 [pay-alice-2026-08]."
-        answer = RagService(AccessService(), llm=llm).answer("August net pay", docs)
+        answer = RagService(AccessService(), MagicMock(), llm=llm).answer("August net pay", docs)
         self.assertEqual(answer, llm.answer.return_value)
         self.assertIn("[pay-alice-2026-08]", llm.answer.call_args.args[1])
         self.assertNotIn("Marcus Lee", llm.answer.call_args.args[1])
 
     def test_no_source_never_calls_llm(self):
         llm = MagicMock()
-        result = RagService(AccessService(), llm=llm).answer("Unknown", [])
+        result = RagService(AccessService(), MagicMock(), llm=llm).answer("Unknown", [])
         self.assertIn("cannot find an authorised source", result)
         llm.answer.assert_not_called()
 
@@ -150,7 +231,7 @@ class AccessPolicyTests(unittest.TestCase):
 
     def test_answer_provider_failure_returns_generic_service_error(self):
         source = next(doc for doc in DOCUMENTS if doc["id"] == "pay-alice-2026-08")
-        rag = RagService(AccessService(), llm=MagicMock())
+        rag = RagService(AccessService(), MagicMock(), llm=MagicMock())
         rag.retrieve = MagicMock(return_value=[source])
         rag.llm.answer.side_effect = LlmUnavailableError("secret provider response")
         controller = ApiController(USERS, InMemoryDocumentRepository([source]), SessionService(USERS), rag, SecurityService(), AuditService())
@@ -194,21 +275,47 @@ class AccessPolicyTests(unittest.TestCase):
         self.assertEqual(document["owner_id"], "alice")
 
     def test_pgvector_ranks_only_app_authorised_parent_ids(self):
-        repository = PgVectorRepository("unused")
-        connection_context = MagicMock()
-        cursor = connection_context.__enter__.return_value.cursor.return_value.__enter__.return_value
+        pool = MagicMock()
+        repository = PgVectorRepository("unused", pool=pool)
+        cursor = pool.connection.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
         cursor.fetchall.return_value = []
-        repository.psycopg = MagicMock()
-        repository.psycopg.connect.return_value = connection_context
 
         self.assertEqual(repository.search(user("alice"), [0.0], []), [])
-        repository.psycopg.connect.assert_not_called()
+        pool.connection.assert_not_called()
 
         repository.search(user("alice"), [0.0], ["pay-alice-2026-08"])
+        pool.connection.assert_called_once_with()
+        self.assertEqual(cursor.execute.call_args_list[0].args, ("SELECT set_config('app.user_id', %s, true)", ("alice",)))
+        self.assertEqual(cursor.execute.call_args_list[1].args, ("SELECT set_config('app.user_role', %s, true)", ("employee",)))
         sql, parameters = cursor.execute.call_args.args
         self.assertIn("WHERE parent_document_id = ANY(%s::text[])", sql)
         self.assertLess(sql.index("WHERE parent_document_id"), sql.index("ORDER BY embedding"))
         self.assertEqual(parameters[0], ["pay-alice-2026-08"])
+
+    def test_user_repository_borrows_shared_pool(self):
+        pool = MagicMock()
+        repository = UserRepository("unused", pool=pool)
+        cursor = pool.connection.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = ("alice", "Alice", "employee", "HR", "Employee", "@alice")
+
+        self.assertEqual(repository.get("alice")["id"], "alice")
+        pool.connection.assert_called_once_with()
+        repository.close()
+        pool.close.assert_not_called()
+
+    def test_repository_owned_pool_is_created_once_and_closed(self):
+        with patch("psycopg_pool.ConnectionPool") as pool_factory:
+            repository = PgVectorRepository("unused")
+            pool = pool_factory.return_value
+            cursor = pool.connection.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
+            cursor.fetchall.return_value = []
+
+            repository.search(user("alice"), [0.0], ["pay-alice-2026-08"])
+            repository.search(user("alice"), [0.0], ["pay-alice-2026-08"])
+            pool_factory.assert_called_once()
+            self.assertEqual(pool.connection.call_count, 2)
+            repository.close()
+            pool.close.assert_called_once_with()
 
     def test_pgvector_rechecks_hit_and_neighbour_metadata(self):
         source = next(document for document in DOCUMENTS if document["id"] == "pay-alice-2026-08")

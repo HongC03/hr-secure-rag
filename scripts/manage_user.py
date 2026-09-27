@@ -44,7 +44,7 @@ def main() -> None:
         parser.error("Password must contain 8–1024 characters")
     password_hash = hash_password(password)
     if args.via_container:
-        compose_file = Path(__file__).resolve().parents[1] / "docker-compose.pgvector.yml"
+        compose_file = Path(__file__).resolve().parents[1] / "docker-compose.yml"
         variables = {"user_id": args.user_id, "name": name, "role": role, "department": department, "label": label, "password_hash": password_hash}
         command = ["docker", "compose", "-f", str(compose_file), "exec", "-T", "postgres", "psql", "-U", "postgres", "-d", "peoplevault", "-v", "ON_ERROR_STOP=1"]
         for key, value in variables.items():

@@ -12,12 +12,13 @@ from seed.fixture_data import load_test_documents
 
 def main() -> None:
     repository = PgVectorRepository.from_environment()
-    if repository is None:
-        raise SystemExit("Set POSTGRES_APP_PASSWORD in .env or set PGVECTOR_DATABASE_URL.")
-    documents = load_test_documents()
-    chunks = DocumentChunkingService().chunk_documents(documents)
-    repository.upsert(chunks, EmbeddingGemmaEmbedding())
-    print(f"Indexed {len(chunks)} chunks from {len(documents)} synthetic Markdown files.")
+    try:
+        documents = load_test_documents()
+        chunks = DocumentChunkingService().chunk_documents(documents)
+        repository.upsert(chunks, EmbeddingGemmaEmbedding())
+        print(f"Indexed {len(chunks)} chunks from {len(documents)} synthetic Markdown files.")
+    finally:
+        repository.close()
 
 
 if __name__ == "__main__":

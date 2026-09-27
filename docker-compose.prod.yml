@@ -1,0 +1,12 @@
+services:
+  frontend:
+    image: hr-secure-rag-frontend-prod
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      target: production
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-5173}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
