@@ -31,6 +31,7 @@ test -f .env || cp .env.example .env
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --wait postgres
 docker compose -f docker-compose.yml -f docker-compose.dev.yml exec -T postgres psql -U postgres -d peoplevault -v ON_ERROR_STOP=1 -f /docker-entrypoint-initdb.d/003_app_users.sql
 docker compose -f docker-compose.yml -f docker-compose.dev.yml exec -T postgres psql -U postgres -d peoplevault -v ON_ERROR_STOP=1 -f /docker-entrypoint-initdb.d/004_self_registration.sql
+docker compose -f docker-compose.yml -f docker-compose.dev.yml exec -T postgres psql -U postgres -d peoplevault -v ON_ERROR_STOP=1 -f /docker-entrypoint-initdb.d/005_personal_uploads.sql
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
 
@@ -73,7 +74,7 @@ The database-only command starts no backend or frontend container. Stop it with 
 Run the policy checks:
 
 ```bash
-python3 -m unittest test_app.py
+python3 -m unittest test_app.py test_upload.py
 ```
 
 ## React frontend
@@ -96,6 +97,20 @@ For a local build outside Docker, run `npm run build` from `frontend/`, then res
 
 For production, use a self-hosted or contractually approved model endpoint and review model output for unsupported claims and prompt injection. The authorisation check must still happen before retrieval and answer generation.
 
+## File uploads
+
+After signing in, select **Upload** in the navigation or visit `/upload`. Every authenticated role can upload non-empty UTF-8 `.txt` and `.md` files up to 1 MiB (shown as 1 MB in the UI). Unsupported formats, binary content, and filenames containing path separators are rejected. This demo should only receive synthetic data.
+
+The server assigns a unique document ID, the authenticated owner's ID, the `personal_upload` type, and `PRIVATE · UPLOAD` classification. File text is chunked, embedded locally, and committed to PostgreSQL before the upload succeeds. Uploaded filenames are display titles and are never used as filesystem paths. Markdown, including any apparent metadata or instructions, is treated as document content.
+
+The upload page lists your saved documents. Their indexed contents remain available after a backend restart without a process-local source registry. The application and database RLS both restrict uploaded documents to their owner, including when another user has an HR role. Return to **Ask** to query them; answer generation still requires a configured answer provider.
+
+Existing database volumes must apply `db/migrations/005_personal_uploads.sql` before using uploads. New volumes apply it automatically with the other migrations. To update an existing volume:
+
+```bash
+docker compose -f docker-compose.yml exec -T postgres psql -U postgres -d peoplevault -v ON_ERROR_STOP=1 -f /docker-entrypoint-initdb.d/005_personal_uploads.sql
+```
+
 ## Backend layout
 
 - `app.py` — application entry point.
@@ -113,6 +128,7 @@ For production, use a self-hosted or contractually approved model endpoint and r
 ```bash
 docker compose -f docker-compose.yml exec -T postgres psql -U postgres -d peoplevault -v ON_ERROR_STOP=1 -f /docker-entrypoint-initdb.d/003_app_users.sql
 docker compose -f docker-compose.yml exec -T postgres psql -U postgres -d peoplevault -v ON_ERROR_STOP=1 -f /docker-entrypoint-initdb.d/004_self_registration.sql
+docker compose -f docker-compose.yml exec -T postgres psql -U postgres -d peoplevault -v ON_ERROR_STOP=1 -f /docker-entrypoint-initdb.d/005_personal_uploads.sql
 ```
 
 The application database role can read accounts and insert employee accounts, but cannot update roles or passwords. The registration API accepts a username, full name, and password; it assigns an employee role and a random `self_...` user ID, and returns a `@username` login name. It ignores any client-supplied role or document owner ID. `scripts/manage_user.py --via-container` uses the running PostgreSQL container's local administrator socket to create or reset an account. Without that flag, the script connects directly using the local PostgreSQL administrator password from the ignored `.env` file and requires `psycopg` and `python-dotenv`. For an administrator-provisioned account, provide `--name`, `--role`, and `--department`; only an administrator running this script can assign a privileged role. Passwords are hashed with salted scrypt before insertion. The HTTP API never exposes password hashes.
@@ -163,4 +179,6 @@ Changing either value after the PostgreSQL data volume has been initialized does
 - `POST /api/ask` — secure RAG question. Requires a valid session cookie.
 - `GET /api/audit` — available only to `hr_payroll` and `hr_partner` demo roles.
 - `POST /api/documents` — synthetic payroll ingestion, limited to `hr_payroll`. The API indexes the document in pgvector before returning `201`; an indexing failure returns `503` and leaves the in-memory source corpus unchanged. The source allowlist for API-created documents is still process-local, so these records need a persistent source registry before restart-safe retrieval is possible.
+- `GET /api/uploads` — lists the authenticated user's private uploaded documents.
+- `POST /api/uploads` — requires a valid session. Send the file bytes as the request body with `Content-Type: application/octet-stream` and a percent-encoded filename in `X-File-Name`. Returns `201` only after indexing commits. The endpoint enforces the 1 MiB size limit before reading the body; expired, invalid, or revoked sessions return `401`.
 - `GET /api/health` and `GET /api/me`.

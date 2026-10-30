@@ -1,6 +1,7 @@
 export const ROUTES = {
   home: '/',
   login: '/login',
+  upload: '/upload',
 }
 
 export const API_PATHS = {
@@ -11,7 +12,10 @@ export const API_PATHS = {
   logout: '/api/logout',
   ask: '/api/ask',
   audit: '/api/audit',
+  uploads: '/api/uploads',
 }
+
+export const UPLOAD_MAX_BYTES = 1024 * 1024
 
 export const TEXT = {
   brandSymbol: '◆',

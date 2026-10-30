@@ -24,8 +24,14 @@ class RagService:
         """Persist a new synthetic document before publishing it to the source corpus."""
         self.pgvector_repository.upsert(self.chunking.chunk_document(document), self.embedding_model)
 
+    def index_upload(self, user: dict[str, str], document: dict[str, Any]) -> None:
+        self.pgvector_repository.upsert(self.chunking.chunk_document(document), self.embedding_model, user=user)
+
+    def uploads(self, user: dict[str, str]) -> list[dict[str, Any]]:
+        return self.access.allowed_documents(user, self.pgvector_repository.personal_documents(user))
+
     def retrieve(self, user: dict[str, str], question: str, documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        permitted_sources = self.access.allowed_documents(user, documents)
+        permitted_sources = self.access.allowed_documents(user, documents) + self.uploads(user)
         # Both the app allowlist and PostgreSQL RLS filter rows before ranking.
         allowed_sources = {document["id"]: document for document in permitted_sources}
         if not allowed_sources:

@@ -10,6 +10,7 @@ class AccessService:
         "payroll_runbook": "RESTRICTED · PAYROLL",
         "manager_policy": "CONFIDENTIAL · HR",
         "hr_policy": "INTERNAL",
+        "personal_upload": "PRIVATE · UPLOAD",
     }
 
     def metadata_is_valid(self, document: dict[str, Any]) -> bool:
@@ -18,7 +19,7 @@ class AccessService:
         if expected is None or document.get("classification") != expected:
             return False
         owner = document.get("owner_id")
-        if kind in {"payslip", "tax_statement"}:
+        if kind in {"payslip", "tax_statement", "personal_upload"}:
             return isinstance(owner, str) and bool(owner)
         return owner is None
 
@@ -26,6 +27,8 @@ class AccessService:
         if not self.metadata_is_valid(document):
             return False
         kind = document["document_type"]
+        if kind == "personal_upload":
+            return document["owner_id"] == user["id"]
         if kind in {"payslip", "tax_statement"}:
             return document["owner_id"] == user["id"] or user["role"] == "hr_payroll"
         if kind == "payroll_runbook": return user["role"] == "hr_payroll"

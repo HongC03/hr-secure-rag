@@ -13,7 +13,7 @@ from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from backend import api_error_message
 from backend.api_text import POLICY_VERSION
@@ -25,6 +25,7 @@ from backend.services.rag_service import RagService
 from backend.services.llm_factory import llm_from_environment
 from backend.services.security_service import SecurityService
 from backend.services.session_service import SessionService
+from backend.services.upload_service import UploadService
 from backend.repositories.pgvector_repository import PgVectorRepository
 from backend.repositories.user_repository import UserRepository
 from seed import demo_data
@@ -136,6 +137,15 @@ class HRHandler(SimpleHTTPRequestHandler):
         return user
 
     def do_GET(self) -> None:  # noqa: N802
+        if self.path == "/upload":
+            if not self.current_user():
+                self.send_response(302)
+                self.send_header("Location", "/login")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
+            self.path = "/index.html"
+            return super().do_GET()
         if self.path == "/login":
             self.path = "/index.html"
             return super().do_GET()
@@ -147,6 +157,11 @@ class HRHandler(SimpleHTTPRequestHandler):
             if not user: return
             response = API_CONTROLLER.audit_events(user)
             return self.send_json(response.status, response.body)
+        if self.path == "/api/uploads":
+            user = self.require_user()
+            if not user: return
+            response = API_CONTROLLER.uploads(user)
+            return self.send_json(response.status, response.body)
         return super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802
@@ -154,6 +169,25 @@ class HRHandler(SimpleHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if origin and urlsplit(origin).netloc != self.headers.get("Host"):
             return self.send_json(403, {"error": api_error_message.INVALID_REQUEST_ORIGIN})
+        if self.path == "/api/uploads":
+            user = self.require_user()
+            if not user: return
+            if self.headers.get("Transfer-Encoding") or self.headers.get("Content-Length") is None:
+                return self.send_json(411, {"error": api_error_message.UPLOAD_LENGTH_REQUIRED})
+            try:
+                size = int(self.headers["Content-Length"])
+                filename = unquote(self.headers.get("X-File-Name", ""), errors="strict")
+            except (ValueError, UnicodeDecodeError):
+                return self.send_json(400, {"error": api_error_message.UPLOAD_FILENAME_INVALID})
+            if size < 0:
+                return self.send_json(400, {"error": api_error_message.UPLOAD_LENGTH_REQUIRED})
+            if size > UploadService.MAX_BYTES:
+                return self.send_json(413, {"error": api_error_message.UPLOAD_TOO_LARGE})
+            data = self.rfile.read(size)
+            if len(data) != size:
+                return self.send_json(400, {"error": api_error_message.UPLOAD_TEXT_INVALID})
+            response = API_CONTROLLER.upload(user, filename, data, started)
+            return self.send_json(response.status, response.body)
         try: payload = self.body()
         except (json.JSONDecodeError, ValueError): return self.send_json(400, {"error": api_error_message.INVALID_JSON_REQUEST})
         if self.path in {"/api/login", "/api/register"}:

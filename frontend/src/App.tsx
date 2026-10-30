@@ -9,6 +9,7 @@ import {
   SiteNav,
 } from './components/PageChrome.tsx'
 import QueryPanel from './components/QueryPanel.tsx'
+import UploadPanel from './components/UploadPanel.tsx'
 import { API_PATHS, ROUTES, TEXT } from './constants.ts'
 import type {
   AnswerResponse,
@@ -22,6 +23,7 @@ import type {
 
 export default function App() {
   const isLoginPage = window.location.pathname === ROUTES.login
+  const isUploadPage = window.location.pathname === ROUTES.upload
   const [user, setUser] = useState<User | null>(null)
   const [requestError, setRequestError] = useState('')
   const [answer, setAnswer] = useState<AnswerResponse | null>(null)
@@ -132,14 +134,14 @@ export default function App() {
 
   return (
     <main className={isLoginPage ? 'loginPage' : undefined}>
-      <SiteNav policy={policy} />
+      <SiteNav policy={policy} signedIn={!!user} />
       <RequestErrorBanner
         message={requestError}
         onDismiss={() => setRequestError('')}
       />
       {(isLoginPage || authChecked) && (
         <>
-          <PageHeader isLoginPage={isLoginPage} />
+          <PageHeader isLoginPage={isLoginPage} isUploadPage={isUploadPage} />
           <AuthPanel
             user={user}
             busy={busy}
@@ -148,16 +150,22 @@ export default function App() {
           />
           {!isLoginPage && user && (
             <>
-              <section className="grid">
-                <QueryPanel
-                  user={user}
-                  busy={busy}
-                  answer={answer}
-                  onAsk={ask}
-                />
-                <ControlsPanel />
-              </section>
-              <AuditPanel events={events} />
+              {isUploadPage ? (
+                <UploadPanel busy={busy} onBusyChange={setBusy} />
+              ) : (
+                <>
+                  <section className="grid">
+                    <QueryPanel
+                      user={user}
+                      busy={busy}
+                      answer={answer}
+                      onAsk={ask}
+                    />
+                    <ControlsPanel />
+                  </section>
+                  <AuditPanel events={events} />
+                </>
+              )}
             </>
           )}
           <footer>{TEXT.footer}</footer>

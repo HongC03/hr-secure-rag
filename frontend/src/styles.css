@@ -313,6 +313,64 @@ footer {
   color: var(--muted);
   padding-top: 28px;
 }
+.navLinks {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+.navLinks a,
+.pageLink {
+  color: var(--navy);
+  font-size: 13px;
+  font-weight: 700;
+  text-underline-offset: 4px;
+}
+.navLinks a[aria-current='page'] {
+  color: var(--teal);
+}
+.uploadForm {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  margin-top: 24px;
+  font-size: 13px;
+}
+.uploadForm input {
+  width: 100%;
+  padding: 18px;
+  border: 1px dashed #b8cbc6;
+  background: #f1f9f6;
+  font: inherit;
+}
+.uploadForm p {
+  margin: 0;
+  line-height: 1.6;
+}
+.uploadSuccess {
+  color: var(--teal);
+  overflow-wrap: anywhere;
+}
+.uploadList {
+  list-style: none;
+  margin: 20px 0;
+  padding: 0;
+}
+.uploadList li {
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.uploadList strong {
+  display: block;
+  font-size: 13px;
+}
+.uploadList span {
+  display: block;
+  margin-top: 5px;
+  font: 10px 'DM Mono';
+  color: var(--teal);
+}
 @media (max-width: 700px) {
   .grid {
     grid-template-columns: 1fr;

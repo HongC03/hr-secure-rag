@@ -126,7 +126,21 @@ class PgVectorRepository:
             for chunk in sorted(found.values(), key=lambda chunk: (chunk["parent_document_id"], chunk["chunk_index"]))
         ]
 
-    def upsert(self, documents: list[dict[str, Any]], embedding_model: Any) -> None:
+    def personal_documents(self, user: dict[str, str]) -> list[dict[str, Any]]:
+        """Recover upload source metadata from persisted chunks under the caller's RLS identity."""
+        with self.pool.connection() as connection, connection.cursor() as cursor:
+            self._set_security_context(cursor, user)
+            cursor.execute("""
+                SELECT DISTINCT parent_document_id, title, document_type, classification, owner_id
+                FROM hr_document_chunks
+                WHERE document_type = 'personal_upload' AND owner_id = %s
+                ORDER BY title, parent_document_id
+            """, (user["id"],))
+            rows = cursor.fetchall()
+        fields = ("id", "title", "document_type", "classification", "owner_id")
+        return [dict(zip(fields, row, strict=True)) for row in rows]
+
+    def upsert(self, documents: list[dict[str, Any]], embedding_model: Any, user: dict[str, str] | None = None) -> None:
         sql = """
             INSERT INTO hr_document_chunks (document_id, parent_document_id, chunk_index, title, document_type, classification, owner_id, content, tags, embedding)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector)
@@ -136,8 +150,8 @@ class PgVectorRepository:
               classification = EXCLUDED.classification, owner_id = EXCLUDED.owner_id,
               content = EXCLUDED.content, tags = EXCLUDED.tags, embedding = EXCLUDED.embedding
         """
-        # Index jobs run as a dedicated HR Payroll service principal; RLS checks it.
-        service_identity = {"id": "indexer", "role": "hr_payroll"}
+        # Personal uploads run as their authenticated owner; seed jobs use the indexer.
+        service_identity = user if user is not None else {"id": "indexer", "role": "hr_payroll"}
         with self.pool.connection() as connection, connection.cursor() as cursor:
             self._set_security_context(cursor, service_identity)
             for document in documents:

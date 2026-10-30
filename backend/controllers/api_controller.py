@@ -11,6 +11,7 @@ from backend.services.llm_service import LlmUnavailableError
 from backend.services.rag_service import RagService
 from backend.services.security_service import SecurityService
 from backend.services.session_service import SessionService
+from backend.services.upload_service import UploadService
 from backend.repositories.user_repository import UserRepository
 
 
@@ -95,6 +96,29 @@ class ApiController:
         if user["role"] not in {"hr_payroll", "hr_partner"}:
             return ApiResponse(403, {"error": api_error_message.AUDIT_PRIVILEGE_REQUIRED})
         return ApiResponse(200, {"events": [asdict(event) for event in self.audit.recent()], "policyVersion": api_text.POLICY_VERSION})
+
+    def uploads(self, user: dict[str, str]) -> ApiResponse:
+        try:
+            documents = self.rag.uploads(user)
+        except Exception:
+            return ApiResponse(503, {"error": api_error_message.UPLOAD_SERVICE_UNAVAILABLE})
+        return ApiResponse(200, {"documents": documents})
+
+    def upload(self, user: dict[str, str] | None, filename: str, data: bytes, started: float) -> ApiResponse:
+        if not user:
+            return ApiResponse(401, {"error": api_error_message.SIGN_IN_REQUIRED})
+        try:
+            document = UploadService().build_document(user["id"], filename, data)
+        except ValueError as error:
+            status = 413 if len(data) > UploadService.MAX_BYTES else 400
+            return ApiResponse(status, {"error": str(error)})
+        try:
+            self.rag.index_upload(user, document)
+        except Exception:
+            cid = self.audit.record(user["id"], "document.upload", "index_failed", 0, started, ["least-privilege", "audit-metadata-only"])
+            return ApiResponse(503, {"error": api_error_message.DOCUMENT_INDEX_FAILED, "correlationId": cid})
+        cid = self.audit.record(user["id"], "document.upload", "accepted", 1, started, ["least-privilege", "audit-metadata-only"])
+        return ApiResponse(201, {"document": {key: document[key] for key in ("id", "title", "classification", "owner_id")}, "correlationId": cid})
 
     def ingest(self, user: dict[str, str], payload: dict, started: float) -> ApiResponse:
         if user["role"] != "hr_payroll":

@@ -55,3 +55,16 @@ export interface AuthSubmission {
   fullName: string
   password: string
 }
+
+export interface UploadedDocument extends Citation {
+  owner_id: string
+}
+
+export interface UploadResponse {
+  document: UploadedDocument
+  correlationId: string
+}
+
+export interface UploadListResponse {
+  documents: UploadedDocument[]
+}
